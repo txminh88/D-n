@@ -81,7 +81,7 @@ interface AppContextType {
   // CRUD
   addClass: (cls: Omit<ClassInfo, 'id'>) => void;
   updateClass: (id: string, cls: Partial<ClassInfo>) => void;
-  deleteClass: (id: string) => void;
+  deleteClass: (id: string) => Promise<void> | void;
 
   addWeek: (week: Omit<SchoolWeek, 'id'>) => void;
   updateWeek: (id: string, week: Partial<SchoolWeek>) => void;
@@ -477,16 +477,50 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const newClass: ClassInfo = { ...cls, id: cls.name };
     setClassesState(prev => [...prev, newClass]);
     addAuditLog('Thêm lớp học', `Thêm lớp ${cls.name}, GVCN: ${cls.homeroomTeacher}`);
+    if (autoSyncSupabase) {
+      (async () => {
+        try {
+          await supabase.from('classes').upsert([newClass]);
+        } catch (e) {
+          console.warn('Supabase addClass sync error:', e);
+        }
+      })();
+    }
   };
 
   const updateClass = (id: string, cls: Partial<ClassInfo>) => {
-    setClassesState(prev => prev.map(c => c.id === id ? { ...c, ...cls } : c));
+    setClassesState(prev => {
+      const next = prev.map(c => c.id === id ? { ...c, ...cls } : c);
+      const updated = next.find(c => c.id === id);
+      if (updated && autoSyncSupabase) {
+        (async () => {
+          try {
+            await supabase.from('classes').upsert([updated]);
+          } catch (e) {
+            console.warn('Supabase updateClass sync error:', e);
+          }
+        })();
+      }
+      return next;
+    });
     addAuditLog('Cập nhật lớp', `Chỉnh sửa thông tin lớp ${id}`);
   };
 
-  const deleteClass = (id: string) => {
-    setClassesState(prev => prev.filter(c => c.id !== id));
+  const deleteClass = async (id: string) => {
+    setClassesState(prev => prev.filter(c => c.id !== id && c.name !== id));
     addAuditLog('Xóa lớp', `Xóa lớp ${id}`);
+    if (autoSyncSupabase) {
+      try {
+        const { error } = await supabase.from('classes').delete().or(`id.eq.${id},name.eq.${id}`);
+        if (error) {
+          console.error('Lỗi xóa lớp trên Supabase:', error.message);
+          throw error;
+        }
+      } catch (err) {
+        console.error('Lỗi kết nối Supabase khi xóa lớp:', err);
+        throw err;
+      }
+    }
   };
 
   const addWeek = (w: Omit<SchoolWeek, 'id'>) => {
@@ -496,10 +530,28 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     };
     setWeeksState(prev => [...prev, newWeek]);
     addAuditLog('Thêm tuần', `Tạo ${w.name} (${w.startDate} - ${w.endDate})`);
+    if (autoSyncSupabase) {
+      (async () => {
+        try {
+          await supabase.from('school_weeks').upsert([newWeek]);
+        } catch {}
+      })();
+    }
   };
 
   const updateWeek = (id: string, week: Partial<SchoolWeek>) => {
-    setWeeksState(prev => prev.map(w => w.id === id ? { ...w, ...week } : w));
+    setWeeksState(prev => {
+      const next = prev.map(w => w.id === id ? { ...w, ...week } : w);
+      const updated = next.find(w => w.id === id);
+      if (updated && autoSyncSupabase) {
+        (async () => {
+          try {
+            await supabase.from('school_weeks').upsert([updated]);
+          } catch {}
+        })();
+      }
+      return next;
+    });
     addAuditLog('Sửa thông tin tuần', `Cập nhật cấu hình tuần ${id}`);
   };
 
@@ -507,8 +559,16 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setWeeksState(prev => prev.map(w => {
       if (w.id === id) {
         const nextStatus = w.status === 'locked' ? 'scoring' : 'locked';
+        const updated = { ...w, status: nextStatus as WeekStatus };
         addAuditLog(nextStatus === 'locked' ? 'Khóa tuần' : 'Mở khóa tuần', `${nextStatus === 'locked' ? 'Khóa' : 'Mở'} ${w.name}`);
-        return { ...w, status: nextStatus };
+        if (autoSyncSupabase) {
+          (async () => {
+            try {
+              await supabase.from('school_weeks').upsert([updated]);
+            } catch {}
+          })();
+        }
+        return updated;
       }
       return w;
     }));
@@ -517,6 +577,13 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const deleteWeek = (id: string) => {
     setWeeksState(prev => prev.filter(w => w.id !== id));
     addAuditLog('Xóa tuần', `Xóa tuần ${id}`);
+    if (autoSyncSupabase) {
+      (async () => {
+        try {
+          await supabase.from('school_weeks').delete().eq('id', id);
+        } catch {}
+      })();
+    }
   };
 
   const addRedFlag = (rf: Omit<RedFlagMember, 'id'>) => {
@@ -526,10 +593,28 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     };
     setRedFlagsState(prev => [...prev, newRf]);
     addAuditLog('Thêm cờ đỏ', `Thêm đội viên ${rf.fullName} (${rf.classId})`);
+    if (autoSyncSupabase) {
+      (async () => {
+        try {
+          await supabase.from('red_flags').upsert([newRf]);
+        } catch {}
+      })();
+    }
   };
 
   const updateRedFlag = (id: string, member: Partial<RedFlagMember>) => {
-    setRedFlagsState(prev => prev.map(r => r.id === id ? { ...r, ...member } : r));
+    setRedFlagsState(prev => {
+      const next = prev.map(r => r.id === id ? { ...r, ...member } : r);
+      const updated = next.find(r => r.id === id);
+      if (updated && autoSyncSupabase) {
+        (async () => {
+          try {
+            await supabase.from('red_flags').upsert([updated]);
+          } catch {}
+        })();
+      }
+      return next;
+    });
     addAuditLog('Sửa thông tin cờ đỏ', `Cập nhật đội viên ID ${id}`);
   };
 
@@ -537,8 +622,16 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setRedFlagsState(prev => prev.map(r => {
       if (r.id === id) {
         const next = r.status === 'active' ? 'locked' : 'active';
+        const updated = { ...r, status: next as 'active' | 'locked' };
         addAuditLog(next === 'locked' ? 'Khóa tài khoản cờ đỏ' : 'Mở khóa tài khoản', `${r.fullName} (${next})`);
-        return { ...r, status: next };
+        if (autoSyncSupabase) {
+          (async () => {
+            try {
+              await supabase.from('red_flags').upsert([updated]);
+            } catch {}
+          })();
+        }
+        return updated;
       }
       return r;
     }));
@@ -547,6 +640,13 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const deleteRedFlag = (id: string) => {
     setRedFlagsState(prev => prev.filter(r => r.id !== id));
     addAuditLog('Xóa cờ đỏ', `Xóa đội viên cờ đỏ ID ${id}`);
+    if (autoSyncSupabase) {
+      (async () => {
+        try {
+          await supabase.from('red_flags').delete().eq('id', id);
+        } catch {}
+      })();
+    }
   };
 
   const addAssignment = (asg: Omit<DutyAssignment, 'id'>) => {
@@ -556,16 +656,41 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     };
     setAssignmentsState(prev => [newAsg, ...prev]);
     addAuditLog('Phân công trực', `Phân công ${asg.redFlagName} chấm lớp ${asg.targetClassId} (${asg.dayOfWeek})`);
+    if (autoSyncSupabase) {
+      (async () => {
+        try {
+          await supabase.from('assignments').upsert([newAsg]);
+        } catch {}
+      })();
+    }
   };
 
   const updateAssignment = (id: string, asg: Partial<DutyAssignment>) => {
-    setAssignmentsState(prev => prev.map(a => a.id === id ? { ...a, ...asg } : a));
+    setAssignmentsState(prev => {
+      const next = prev.map(a => a.id === id ? { ...a, ...asg } : a);
+      const updated = next.find(a => a.id === id);
+      if (updated && autoSyncSupabase) {
+        (async () => {
+          try {
+            await supabase.from('assignments').upsert([updated]);
+          } catch {}
+        })();
+      }
+      return next;
+    });
     addAuditLog('Sửa phân công', `Cập nhật phân công ${id}`);
   };
 
   const deleteAssignment = (id: string) => {
     setAssignmentsState(prev => prev.filter(a => a.id !== id));
     addAuditLog('Xóa phân công', `Hủy phân công trực ${id}`);
+    if (autoSyncSupabase) {
+      (async () => {
+        try {
+          await supabase.from('assignments').delete().eq('id', id);
+        } catch {}
+      })();
+    }
   };
 
   // Smart Rotation Auto-assignment algorithm
@@ -612,6 +737,14 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       ...prev.filter(a => a.weekId !== weekId)
     ]);
     addAuditLog('Phân công tự động', `Tạo tự động ${newAssignments.length} lượt trực cho tuần ${weekId} với thuật toán xoay vòng`);
+
+    if (autoSyncSupabase) {
+      (async () => {
+        try {
+          await supabase.from('assignments').upsert(newAssignments);
+        } catch {}
+      })();
+    }
   };
 
   const addCriteria = (crit: Omit<ViolationCriteria, 'id'>) => {
@@ -621,16 +754,41 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     };
     setCriteriaState(prev => [...prev, newCrit]);
     addAuditLog('Thêm tiêu chí vi phạm', `Thêm lỗi "${crit.name}" (${crit.points}đ, nhóm ${crit.group})`);
+    if (autoSyncSupabase) {
+      (async () => {
+        try {
+          await supabase.from('criteria').upsert([newCrit]);
+        } catch {}
+      })();
+    }
   };
 
   const updateCriteria = (id: string, crit: Partial<ViolationCriteria>) => {
-    setCriteriaState(prev => prev.map(c => c.id === id ? { ...c, ...crit } : c));
+    setCriteriaState(prev => {
+      const next = prev.map(c => c.id === id ? { ...c, ...crit } : c);
+      const updated = next.find(c => c.id === id);
+      if (updated && autoSyncSupabase) {
+        (async () => {
+          try {
+            await supabase.from('criteria').upsert([updated]);
+          } catch {}
+        })();
+      }
+      return next;
+    });
     addAuditLog('Cập nhật tiêu chí', `Chỉnh sửa tiêu chí ${id}`);
   };
 
   const deleteCriteria = (id: string) => {
     setCriteriaState(prev => prev.filter(c => c.id !== id));
     addAuditLog('Xóa tiêu chí', `Xóa tiêu chí ${id}`);
+    if (autoSyncSupabase) {
+      (async () => {
+        try {
+          await supabase.from('criteria').delete().eq('id', id);
+        } catch {}
+      })();
+    }
   };
 
   const submitScore = (data: Omit<ScoreSubmission, 'id' | 'submittedAt'>) => {
@@ -724,18 +882,34 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   const bulkApprovePending = () => {
     const pendingCount = submissions.filter(s => s.weekId === activeWeekId && s.status === 'pending').length;
+    const nowStr = new Date().toISOString().replace('T', ' ').substring(0, 19);
+    const approver = currentUser ? currentUser.name : 'Ban Giám Hiệu';
     setSubmissionsState(prev => prev.map(s => {
       if (s.weekId === activeWeekId && s.status === 'pending') {
         return {
           ...s,
           status: 'approved' as const,
-          approvedAt: new Date().toISOString().replace('T', ' ').substring(0, 19),
-          approvedBy: currentUser ? currentUser.name : 'Ban Giám Hiệu'
+          approvedAt: nowStr,
+          approvedBy: approver
         };
       }
       return s;
     }));
     addAuditLog('Duyệt hàng loạt', `Đã duyệt tất cả ${pendingCount} phiếu chấm tuần ${activeWeek?.name}`);
+    if (autoSyncSupabase) {
+      (async () => {
+        try {
+          await supabase.from('submissions')
+            .update({
+              status: 'approved',
+              approvedAt: nowStr,
+              approvedBy: approver
+            })
+            .eq('weekId', activeWeekId)
+            .eq('status', 'pending');
+        } catch {}
+      })();
+    }
   };
 
   const setSelectedAcademicYear = (year: string) => {
@@ -898,12 +1072,38 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const updateSettings = (newSettings: Partial<SchoolSettings>) => {
-    setSettingsState(prev => ({ ...prev, ...newSettings }));
+    setSettingsState(prev => {
+      const next = { ...prev, ...newSettings };
+      if (autoSyncSupabase) {
+        (async () => {
+          try {
+            await supabase.from('school_settings').upsert({
+              id: 'config_primary',
+              data: next
+            });
+          } catch {}
+        })();
+      }
+      return next;
+    });
     addAuditLog('Cập nhật cài đặt', 'Thay đổi cấu hình hệ thống thi đua');
   };
 
   const updateMinutes = (newMinutes: Partial<WeeklyMinutesReport>) => {
-    setMinutesState(prev => ({ ...prev, ...newMinutes }));
+    setMinutesState(prev => {
+      const next = { ...prev, ...newMinutes };
+      if (autoSyncSupabase) {
+        (async () => {
+          try {
+            await supabase.from('weekly_minutes').upsert({
+              id: next.weekId || 'current_minutes',
+              ...next
+            });
+          } catch {}
+        })();
+      }
+      return next;
+    });
     addAuditLog('Cập nhật biên bản', `Chỉnh sửa nội dung biên bản tuần ${activeWeek?.name}`);
   };
 

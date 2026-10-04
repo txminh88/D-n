@@ -8,18 +8,21 @@ import {
   Search,
   School,
   Download,
-  Users
+  Users,
+  CloudUpload
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { ClassInfo } from '../types';
 
 export const ClassesView: React.FC = () => {
-  const { classes, addClass, updateClass, deleteClass, setActiveTab } = useApp();
+  const { classes, addClass, updateClass, deleteClass, setActiveTab, syncAllToSupabase, isSyncingSupabase } = useApp();
 
   const [selectedGrade, setSelectedGrade] = useState<number | 'all'>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [modalOpen, setModalOpen] = useState(false);
   const [editingClass, setEditingClass] = useState<ClassInfo | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [syncToast, setSyncToast] = useState<string | null>(null);
 
   const [formData, setFormData] = useState({
     name: '',
@@ -67,18 +70,44 @@ export const ClassesView: React.FC = () => {
     setModalOpen(true);
   };
 
+  const handleDeleteClass = async (cls: ClassInfo) => {
+    const isConfirmed = window.confirm(`Bạn có chắc chắn muốn xóa lớp ${cls.name}?\nThao tác này sẽ đồng bộ xóa trực tiếp trên cả hệ thống và máy chủ Supabase.`);
+    if (!isConfirmed) return;
+
+    try {
+      setDeletingId(cls.id);
+      await deleteClass(cls.id);
+      setSyncToast(`✓ Đã xóa lớp ${cls.name} và đồng bộ xóa trên Supabase thành công!`);
+      setTimeout(() => setSyncToast(null), 4000);
+    } catch (err: any) {
+      alert('Lỗi khi xóa lớp: ' + (err.message || String(err)));
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (editingClass) {
       updateClass(editingClass.id, formData);
+      setSyncToast(`✓ Đã lưu thay đổi lớp ${formData.name} lên Supabase!`);
     } else {
       addClass(formData);
+      setSyncToast(`✓ Đã thêm lớp ${formData.name} và lưu lên Supabase!`);
     }
+    setTimeout(() => setSyncToast(null), 4000);
     setModalOpen(false);
   };
 
   return (
     <div className="p-4 sm:p-6 space-y-6">
+      {syncToast && (
+        <div className="bg-emerald-50 border border-emerald-300 text-emerald-800 px-4 py-2.5 rounded-lg text-xs font-bold flex items-center justify-between shadow-xs animate-in fade-in">
+          <span>{syncToast}</span>
+          <button onClick={() => setSyncToast(null)} className="text-emerald-600 hover:text-emerald-900 font-bold ml-4">✕</button>
+        </div>
+      )}
+
       <div className="bg-white p-4 rounded-xl border border-slate-200/80 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h2 className="text-xl font-extrabold text-slate-800 tracking-tight flex items-center gap-2">
@@ -90,13 +119,41 @@ export const ClassesView: React.FC = () => {
           </p>
         </div>
 
-        <button
-          onClick={handleOpenAdd}
-          className="flex items-center space-x-1.5 rounded-lg bg-[#1a56db] hover:bg-[#1546b3] text-white px-3.5 py-2 text-xs font-bold shadow-xs transition-colors"
-        >
-          <Plus className="h-4 w-4" />
-          <span>+ Thêm lớp</span>
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={async () => {
+              try {
+                const res = await syncAllToSupabase();
+                if (res.success) {
+                  setSyncToast('✓ Đã đồng bộ và lưu dữ liệu mới nhất lên Supabase thành công!');
+                  setTimeout(() => setSyncToast(null), 4000);
+                } else {
+                  alert('Lỗi khi lưu lên Supabase: ' + res.message);
+                }
+              } catch (err: any) {
+                alert('Lỗi: ' + (err.message || String(err)));
+              }
+            }}
+            disabled={isSyncingSupabase}
+            className="flex items-center space-x-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white px-3.5 py-2 text-xs font-bold shadow-xs transition-colors disabled:opacity-50"
+            title="Lưu toàn bộ danh sách lớp và dữ liệu hiện tại lên cơ sở dữ liệu Supabase"
+          >
+            {isSyncingSupabase ? (
+              <div className="h-4 w-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+            ) : (
+              <CloudUpload className="h-4 w-4" />
+            )}
+            <span>{isSyncingSupabase ? 'Đang lưu...' : 'Lưu lên Supabase'}</span>
+          </button>
+
+          <button
+            onClick={handleOpenAdd}
+            className="flex items-center space-x-1.5 rounded-lg bg-[#1a56db] hover:bg-[#1546b3] text-white px-3.5 py-2 text-xs font-bold shadow-xs transition-colors"
+          >
+            <Plus className="h-4 w-4" />
+            <span>+ Thêm lớp</span>
+          </button>
+        </div>
       </div>
 
       {/* Filter and Search */}
@@ -186,15 +243,16 @@ export const ClassesView: React.FC = () => {
                         <Edit2 className="h-4 w-4" />
                       </button>
                       <button
-                        onClick={() => {
-                          if (window.confirm(`Xóa lớp ${cls.name}?`)) {
-                            deleteClass(cls.id);
-                          }
-                        }}
-                        title="Xóa"
-                        className="p-1 rounded hover:bg-rose-50 text-slate-400 hover:text-rose-600"
+                        onClick={() => handleDeleteClass(cls)}
+                        disabled={deletingId === cls.id}
+                        title="Xóa lớp và đồng bộ Supabase"
+                        className="p-1 rounded hover:bg-rose-50 text-slate-400 hover:text-rose-600 disabled:opacity-50"
                       >
-                        <Trash2 className="h-4 w-4" />
+                        {deletingId === cls.id ? (
+                          <div className="h-4 w-4 border-2 border-rose-500 border-t-transparent rounded-full animate-spin" />
+                        ) : (
+                          <Trash2 className="h-4 w-4" />
+                        )}
                       </button>
                     </div>
                   </td>
