@@ -16,6 +16,8 @@ import {
   ClassRankingResult,
   AccountPermissions
 } from '../types';
+import { supabase, testSupabaseConnection } from '../lib/supabaseClient';
+import { uploadAllToSupabase, fetchAllFromSupabase } from '../lib/supabaseSync';
 import {
   INITIAL_SETTINGS,
   INITIAL_USERS,
@@ -112,6 +114,16 @@ interface AppContextType {
   addAuditLog: (action: string, details: string) => void;
   resetToDefaultData: () => void;
 
+  // Supabase Database Integration
+  supabaseStatus: 'checking' | 'connected' | 'error' | 'not_configured';
+  supabaseMessage: string;
+  isSyncingSupabase: boolean;
+  autoSyncSupabase: boolean;
+  checkSupabaseConnection: () => Promise<{ success: boolean; message: string }>;
+  syncAllToSupabase: () => Promise<{ success: boolean; message: string; counts?: any }>;
+  loadAllFromSupabase: () => Promise<{ success: boolean; message: string }>;
+  setAutoSyncSupabase: (val: boolean) => void;
+
   // Computations
   activeWeek: SchoolWeek | undefined;
   getRankingsForWeek: (weekId: string) => ClassRankingResult[];
@@ -188,6 +200,59 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   });
   const [mobileSimulatorOpen, setMobileSimulatorOpen] = useState<boolean>(false);
   const [loginModalOpen, setLoginModalOpen] = useState<boolean>(false);
+
+  // Supabase State
+  const [supabaseStatus, setSupabaseStatus] = useState<'checking' | 'connected' | 'error' | 'not_configured'>('checking');
+  const [supabaseMessage, setSupabaseMessage] = useState<string>('Đang kiểm tra kết nối Supabase...');
+  const [isSyncingSupabase, setIsSyncingSupabase] = useState<boolean>(false);
+  const [autoSyncSupabase, setAutoSyncSupabaseState] = useState<boolean>(() => {
+    return getStorage<boolean>('quanba_auto_sync_supabase', true);
+  });
+
+  const setAutoSyncSupabase = (val: boolean) => {
+    setAutoSyncSupabaseState(val);
+    setStorage('quanba_auto_sync_supabase', val);
+  };
+
+  const checkSupabaseConnection = async () => {
+    setSupabaseStatus('checking');
+    setSupabaseMessage('Đang kết nối tới máy chủ Supabase...');
+    const res = await testSupabaseConnection();
+    if (res.success) {
+      setSupabaseStatus('connected');
+      setSupabaseMessage(res.message);
+    } else {
+      setSupabaseStatus('error');
+      setSupabaseMessage(res.message);
+    }
+    return res;
+  };
+
+  // Test connection on mount and auto-load if connected
+  useEffect(() => {
+    let isMounted = true;
+    (async () => {
+      const res = await checkSupabaseConnection();
+      if (res.success && autoSyncSupabase && isMounted) {
+        try {
+          const fetchRes = await fetchAllFromSupabase();
+          if (fetchRes.success && fetchRes.data && isMounted) {
+            if (fetchRes.data.classes && fetchRes.data.classes.length > 0) setClassesState(fetchRes.data.classes);
+            if (fetchRes.data.weeks && fetchRes.data.weeks.length > 0) setWeeksState(fetchRes.data.weeks);
+            if (fetchRes.data.redFlags && fetchRes.data.redFlags.length > 0) setRedFlagsState(fetchRes.data.redFlags);
+            if (fetchRes.data.criteria && fetchRes.data.criteria.length > 0) setCriteriaState(fetchRes.data.criteria);
+            if (fetchRes.data.assignments && fetchRes.data.assignments.length > 0) setAssignmentsState(fetchRes.data.assignments);
+            if (fetchRes.data.submissions && fetchRes.data.submissions.length > 0) setSubmissionsState(fetchRes.data.submissions);
+            if (fetchRes.data.users && fetchRes.data.users.length > 0) setUsersState(fetchRes.data.users);
+            if (fetchRes.data.settings) setSettingsState(fetchRes.data.settings);
+            if (fetchRes.data.minutes) setMinutesState(fetchRes.data.minutes);
+            if (fetchRes.data.auditLogs && fetchRes.data.auditLogs.length > 0) setAuditLogsState(fetchRes.data.auditLogs);
+          }
+        } catch {}
+      }
+    })();
+    return () => { isMounted = false; };
+  }, []);
 
   // Sync to localStorage
   useEffect(() => { setStorage(STORAGE_KEYS.SETTINGS, settings); }, [settings]);
@@ -588,18 +653,44 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     };
     setNotificationsState(prev => [newNotif, ...prev]);
     addAuditLog('Nhập kết quả chấm', `${data.redFlagName} gửi phiếu chấm lớp ${data.classId} (${data.dayLabel})`);
+
+    // Async sync to Supabase if enabled
+    if (autoSyncSupabase) {
+      (async () => {
+        try {
+          const { error } = await supabase.from('submissions').upsert([newSub]);
+          if (error) console.warn('Supabase auto-sync submission warning:', error.message);
+        } catch {
+          // ignore
+        }
+      })();
+    }
   };
 
   const approveSubmission = (submissionId: string) => {
     setSubmissionsState(prev => prev.map(s => {
       if (s.id === submissionId) {
         addAuditLog('Duyệt phiếu chấm', `Duyệt kết quả chấm lớp ${s.classId} của ${s.redFlagName}`);
-        return {
+        const approvedSub = {
           ...s,
           status: 'approved' as const,
           approvedAt: new Date().toISOString().replace('T', ' ').substring(0, 19),
           approvedBy: currentUser ? currentUser.name : 'Ban Giám Hiệu'
         };
+        if (autoSyncSupabase) {
+          (async () => {
+            try {
+              await supabase.from('submissions').update({
+                status: 'approved',
+                approvedAt: approvedSub.approvedAt,
+                approvedBy: approvedSub.approvedBy
+              }).eq('id', submissionId);
+            } catch {
+              // ignore
+            }
+          })();
+        }
+        return approvedSub;
       }
       return s;
     }));
@@ -609,6 +700,18 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setSubmissionsState(prev => prev.map(s => {
       if (s.id === submissionId) {
         addAuditLog('Yêu cầu sửa phiếu', `Yêu cầu ${s.redFlagName} sửa phiếu lớp ${s.classId}: ${reason}`);
+        if (autoSyncSupabase) {
+          (async () => {
+            try {
+              await supabase.from('submissions').update({
+                status: 'rejected',
+                rejectionReason: reason
+              }).eq('id', submissionId);
+            } catch {
+              // ignore
+            }
+          })();
+        }
         return {
           ...s,
           status: 'rejected' as const,
@@ -699,24 +802,58 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     };
     setUsersState(prev => [newUser, ...prev]);
     addAuditLog('Cấp tài khoản mới', `Tạo tài khoản ${newUser.username} (${newUser.roleTitle || newUser.role})`);
+
+    if (autoSyncSupabase) {
+      (async () => {
+        try {
+          await supabase.from('users').upsert([newUser]);
+        } catch {}
+      })();
+    }
   };
 
   const updateUser = (id: string, userData: Partial<User>) => {
-    setUsersState(prev => prev.map(u => u.id === id ? { ...u, ...userData } : u));
+    setUsersState(prev => {
+      const next = prev.map(u => u.id === id ? { ...u, ...userData } : u);
+      const updated = next.find(u => u.id === id);
+      if (updated && autoSyncSupabase) {
+        (async () => {
+          try {
+            await supabase.from('users').upsert([updated]);
+          } catch {}
+        })();
+      }
+      return next;
+    });
     addAuditLog('Cập nhật tài khoản', `Chỉnh sửa thông tin tài khoản ID ${id}`);
   };
 
   const deleteUser = (id: string) => {
     setUsersState(prev => prev.filter(u => u.id !== id));
     addAuditLog('Xóa tài khoản', `Xóa tài khoản ID ${id}`);
+    if (autoSyncSupabase) {
+      (async () => {
+        try {
+          await supabase.from('users').delete().eq('id', id);
+        } catch {}
+      })();
+    }
   };
 
   const toggleUserStatus = (id: string) => {
     setUsersState(prev => prev.map(u => {
       if (u.id === id) {
-        const next = u.status === 'active' ? 'locked' : 'active';
-        addAuditLog(next === 'locked' ? 'Khóa tài khoản' : 'Mở khóa tài khoản', `${u.username} (${u.name})`);
-        return { ...u, status: next };
+        const nextStatus = u.status === 'active' ? 'locked' : 'active';
+        const updated = { ...u, status: nextStatus as 'active' | 'locked' };
+        addAuditLog(nextStatus === 'locked' ? 'Khóa tài khoản' : 'Mở khóa tài khoản', `${u.username} (${u.name})`);
+        if (autoSyncSupabase) {
+          (async () => {
+            try {
+              await supabase.from('users').upsert([updated]);
+            } catch {}
+          })();
+        }
+        return updated;
       }
       return u;
     }));
@@ -724,7 +861,20 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   const resetUserPassword = (id: string, newPassword?: string) => {
     const pwd = newPassword || '123456';
-    setUsersState(prev => prev.map(u => u.id === id ? { ...u, password: pwd } : u));
+    setUsersState(prev => prev.map(u => {
+      if (u.id === id) {
+        const updated = { ...u, password: pwd };
+        if (autoSyncSupabase) {
+          (async () => {
+            try {
+              await supabase.from('users').upsert([updated]);
+            } catch {}
+          })();
+        }
+        return updated;
+      }
+      return u;
+    }));
     addAuditLog('Đặt lại mật khẩu', `Đặt lại mật khẩu cho tài khoản ID ${id}`);
   };
 
@@ -732,8 +882,16 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setUsersState(prev => prev.map(u => {
       if (u.id === userId) {
         const updatedPerms = { ...(u.permissions || {}), ...perms };
+        const updated = { ...u, permissions: updatedPerms };
         addAuditLog('Phân quyền tài khoản', `Cập nhật quyền hạn cho tài khoản: ${u.username} (${u.name})`);
-        return { ...u, permissions: updatedPerms };
+        if (autoSyncSupabase) {
+          (async () => {
+            try {
+              await supabase.from('users').upsert([updated]);
+            } catch {}
+          })();
+        }
+        return updated;
       }
       return u;
     }));
@@ -776,6 +934,61 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     addAuditLog('Khôi phục dữ liệu', 'Đã đặt lại dữ liệu mẫu trường PTDTBT TH&THCS Quản Bạ');
   };
 
+  const syncAllToSupabase = async () => {
+    setIsSyncingSupabase(true);
+    try {
+      const res = await uploadAllToSupabase({
+        classes,
+        weeks,
+        redFlags,
+        criteria,
+        assignments,
+        submissions,
+        users,
+        settings,
+        minutes,
+        auditLogs
+      });
+      if (res.success) {
+        setSupabaseStatus('connected');
+        setSupabaseMessage('Đã đồng bộ toàn bộ dữ liệu lên máy chủ Supabase thành công!');
+        addAuditLog('Đồng bộ Supabase', 'Đã tải toàn bộ dữ liệu ứng dụng lên máy chủ Supabase');
+      } else {
+        setSupabaseStatus('error');
+        setSupabaseMessage(`Lỗi đồng bộ: ${res.message}`);
+      }
+      return res;
+    } finally {
+      setIsSyncingSupabase(false);
+    }
+  };
+
+  const loadAllFromSupabase = async () => {
+    setIsSyncingSupabase(true);
+    try {
+      const res = await fetchAllFromSupabase();
+      if (res.success && res.data) {
+        if (res.data.classes && res.data.classes.length > 0) setClassesState(res.data.classes);
+        if (res.data.weeks && res.data.weeks.length > 0) setWeeksState(res.data.weeks);
+        if (res.data.redFlags && res.data.redFlags.length > 0) setRedFlagsState(res.data.redFlags);
+        if (res.data.criteria && res.data.criteria.length > 0) setCriteriaState(res.data.criteria);
+        if (res.data.assignments && res.data.assignments.length > 0) setAssignmentsState(res.data.assignments);
+        if (res.data.submissions && res.data.submissions.length > 0) setSubmissionsState(res.data.submissions);
+        if (res.data.users && res.data.users.length > 0) setUsersState(res.data.users);
+        if (res.data.settings) setSettingsState(res.data.settings);
+        if (res.data.minutes) setMinutesState(res.data.minutes);
+        setSupabaseStatus('connected');
+        setSupabaseMessage(res.message);
+        addAuditLog('Tải dữ liệu Supabase', 'Đã nạp dữ liệu từ máy chủ Supabase về ứng dụng');
+      } else {
+        setSupabaseMessage(res.message);
+      }
+      return res;
+    } finally {
+      setIsSyncingSupabase(false);
+    }
+  };
+
   return (
     <AppContext.Provider
       value={{
@@ -799,6 +1012,16 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         minutes,
         mobileSimulatorOpen,
         loginModalOpen,
+
+        // Supabase Database Integration
+        supabaseStatus,
+        supabaseMessage,
+        isSyncingSupabase,
+        autoSyncSupabase,
+        checkSupabaseConnection,
+        syncAllToSupabase,
+        loadAllFromSupabase,
+        setAutoSyncSupabase,
 
         login,
         logout,

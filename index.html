@@ -3,6 +3,42 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <script>
+      (function() {
+        try {
+          if (typeof window !== 'undefined') {
+            var _nativeFetch = window.fetch ? window.fetch.bind(window) : undefined;
+            var _activeFetch = _nativeFetch;
+            var proto = window.__proto__ || (typeof Window !== 'undefined' ? Window.prototype : null);
+
+            var defineFetch = function(target) {
+              if (!target) return;
+              try {
+                Object.defineProperty(target, 'fetch', {
+                  get: function() { return _activeFetch; },
+                  set: function(fn) { _activeFetch = fn; },
+                  configurable: true,
+                  enumerable: true
+                });
+              } catch (err) {}
+            };
+
+            defineFetch(window);
+            if (proto) defineFetch(proto);
+          }
+        } catch (e) {}
+
+        // Global safeguard for any iframe/polyfill attempting to overwrite fetch
+        if (typeof window !== 'undefined') {
+          window.addEventListener('error', function(event) {
+            if (event && event.message && event.message.indexOf('fetch') !== -1 && event.message.indexOf('getter') !== -1) {
+              if (event.preventDefault) event.preventDefault();
+              return true;
+            }
+          });
+        }
+      })();
+    </script>
     <title>QUẢN LÝ THI ĐUA NỀ NẾP HỌC SINH - TRƯỜNG PTDTBT TH&THCS QUẢN BẠ</title>
     <meta name="description" content="Hệ thống Quản lý thi đua nề nếp học sinh Trường PTDTBT TH&THCS Quản Bạ" />
     <meta property="og:title" content="QUẢN LÝ THI ĐUA NỀ NẾP HỌC SINH - TRƯỜNG PTDTBT TH&THCS QUẢN BẠ" />

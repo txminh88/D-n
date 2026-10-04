@@ -15,7 +15,8 @@ import {
   FileText,
   Settings,
   Calendar,
-  ChevronDown
+  ChevronDown,
+  Database
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 
@@ -28,7 +29,8 @@ export const TopNavBar: React.FC = () => {
     academicYears,
     selectedAcademicYear,
     setSelectedAcademicYear,
-    activeWeek
+    activeWeek,
+    supabaseStatus
   } = useApp();
 
   const navItems = [
@@ -135,6 +137,28 @@ export const TopNavBar: React.FC = () => {
           <span className="hidden sm:inline-block bg-cyan-500/20 text-cyan-200 font-bold px-2 py-1 rounded-md text-[11px] border border-cyan-400/30 whitespace-nowrap">
             {activeWeek?.name}
           </span>
+
+          {/* Supabase Cloud Status Indicator */}
+          <button
+            onClick={() => setActiveTab('settings')}
+            title={`Supabase Cloud Database: ${
+              supabaseStatus === 'connected' ? 'Đã kết nối thành công' :
+              supabaseStatus === 'error' ? 'Cần kiểm tra kết nối' : 'Đang kết nối'
+            }`}
+            className="flex items-center space-x-1.5 bg-[#0a2952]/70 hover:bg-[#0a2952] border border-emerald-400/40 px-2.5 py-1 rounded-lg text-xs transition-colors cursor-pointer"
+          >
+            <Database className="h-3.5 w-3.5 text-emerald-400" />
+            <span className="hidden xl:inline text-[11px] font-semibold text-emerald-300">Supabase</span>
+            <span
+              className={`h-2 w-2 rounded-full ${
+                supabaseStatus === 'connected'
+                  ? 'bg-emerald-400 animate-pulse'
+                  : supabaseStatus === 'error'
+                  ? 'bg-rose-400'
+                  : 'bg-amber-400'
+              }`}
+            />
+          </button>
         </div>
       </div>
     </nav>
